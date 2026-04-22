@@ -1,0 +1,28 @@
+AWX:
+  enabled: false
+
+rbac:
+  create: true
+
+operator-controller:
+  spec:
+    replicas: 1
+
+operator-controller-containers:
+  awx-manager:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  kube-rbac-proxy:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
