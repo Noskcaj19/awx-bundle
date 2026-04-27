@@ -42,8 +42,10 @@ check: ## Verify required tools are installed
 	@echo "✓ All prerequisites met"
 
 cluster-create: ## Create the k3d cluster
+	@mkdir -p data/postgres
 	@if ! k3d cluster list 2>/dev/null | awk '{print $$1}' | grep -qx "$(CLUSTER_NAME)"; then \
-		k3d cluster create --config $(K3D_CONFIG); \
+		k3d cluster create --config $(K3D_CONFIG) \
+			--volume "$$(pwd)/data/postgres:/var/lib/rancher/k3s/storage@server:0"; \
 	else \
 		echo "Cluster '$(CLUSTER_NAME)' already exists"; \
 	fi

@@ -100,6 +100,6 @@ Secrets are stored in `.env` (git-ignored). Copy `.env.example` to get started:
 ## Notes
 
 - First boot pulls ~3GB of images — be patient
-- PostgreSQL data is persisted to `./data/storage/` on the host and survives `make down`
+- PostgreSQL data is persisted to `./data/postgres/` on the host and survives `make down`
 - Projects are expected to come from Git/SCM (no local project persistence)
 - To change the host port, update both `k3d/awx-dev.yaml` and `CSRF_TRUSTED_ORIGINS` in `k8s/awx/awx.yaml`

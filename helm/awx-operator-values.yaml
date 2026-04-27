@@ -1,13 +1,5 @@
-AWX:
-  enabled: false
-
-rbac:
-  create: true
-
-operator-controller:
-  spec:
-    replicas: 1
-
+# Cap operator resource usage for local dev (k3d).
+# Everything else uses the chart defaults.
 operator-controller-containers:
   awx-manager:
     resources:
@@ -17,7 +9,6 @@ operator-controller-containers:
       limits:
         cpu: 500m
         memory: 512Mi
-
   kube-rbac-proxy:
     resources:
       requests:
