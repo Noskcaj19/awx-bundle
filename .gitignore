@@ -3,3 +3,8 @@
 .DS_Store
 .env
 data/
+certs/*.crt
+certs/*.pem
+k8s/awx/generated/*
+!k8s/awx/generated/.gitkeep
+!k8s/awx/generated/overlay-patch.yaml

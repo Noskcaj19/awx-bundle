@@ -92,10 +92,32 @@ localhost:8080 → k3d port-map → NodePort 30080 → AWX web service
 
 Secrets are stored in `.env` (git-ignored). Copy `.env.example` to get started:
 
-| Variable             | Purpose                          |
-|----------------------|----------------------------------|
-| `AWX_ADMIN_PASSWORD` | AWX web UI admin password        |
-| `AWX_SECRET_KEY`     | Django secret key (keep stable)  |
+| Variable              | Purpose                                                       |
+|-----------------------|---------------------------------------------------------------|
+| `AWX_ADMIN_PASSWORD`  | AWX web UI admin password                                     |
+| `AWX_SECRET_KEY`      | Django secret key (keep stable)                               |
+| `HTTP_PROXY`          | Optional outbound HTTP proxy (web/task/EE pods)               |
+| `HTTPS_PROXY`         | Optional outbound HTTPS proxy (web/task/EE pods)              |
+| `NO_PROXY`            | Comma-separated bypass list (cluster CIDRs are sensible)      |
+| `AWX_CA_BUNDLE_FILE`  | Path to a PEM CA bundle to trust (default `certs/corporate-ca.crt`) |
+
+### Corporate CA bundle
+
+Drop your PEM-encoded internal root CA(s) at the path referenced by
+`AWX_CA_BUNDLE_FILE` (default `certs/corporate-ca.crt`). On `make up` it
+is loaded into the `awx-custom-certs` secret as `bundle-ca.crt` and
+referenced via the AWX CR's `bundle_cacert_secret`, so both the AWX
+control plane and execution environments trust it.
+
+### HTTP proxy
+
+When `HTTP_PROXY` / `HTTPS_PROXY` are set in `.env`, the values are
+injected into the AWX `web`, `task`, and execution-environment pods
+via the operator's `web_extra_env`, `task_extra_env`, and
+`ee_extra_env` fields (both upper- and lower-case forms).
+
+Both features are wired through a kustomize patch generated at apply
+time (`k8s/awx/generated/overlay-patch.yaml` — auto-regenerated).
 
 ## Notes
 

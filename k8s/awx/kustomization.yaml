@@ -5,3 +5,9 @@ namespace: awx
 
 resources:
   - awx.yaml
+
+patches:
+  - path: generated/overlay-patch.yaml
+    target:
+      kind: AWX
+      name: awx
