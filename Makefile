@@ -46,7 +46,16 @@ check: ## Verify required tools are installed
 cluster-create: ## Create the k3d cluster
 	@mkdir -p data/postgres
 	@if ! k3d cluster list 2>/dev/null | awk '{print $$1}' | grep -qx "$(CLUSTER_NAME)"; then \
+		[ -f $(ENV_FILE) ] && { set -a && . ./$(ENV_FILE) && set +a; }; \
+		if [ -n "$${K3D_PROXY_IMAGE:-}" ]; then \
+			echo "Using custom k3d proxy image: $$K3D_PROXY_IMAGE"; \
+			export K3D_IMAGE_LOADBALANCER="$$K3D_PROXY_IMAGE"; \
+		fi; \
+		if [ -n "$${K3D_NODE_IMAGE:-}" ]; then \
+			echo "Using custom k3s node image: $$K3D_NODE_IMAGE"; \
+		fi; \
 		k3d cluster create --config $(K3D_CONFIG) \
+			$${K3D_NODE_IMAGE:+--image "$$K3D_NODE_IMAGE"} \
 			--volume "$$(pwd)/data/postgres:/var/lib/rancher/k3s/storage@server:0"; \
 	else \
 		echo "Cluster '$(CLUSTER_NAME)' already exists"; \

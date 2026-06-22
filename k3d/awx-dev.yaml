@@ -4,7 +4,7 @@ kind: Simple
 metadata:
   name: awx-dev
 
-image: rancher/k3s:v1.30.3-k3s1
+image: docker.io/rancher/k3s:v1.35.5-k3s1
 
 kubeAPI:
   hostIP: "127.0.0.1"
