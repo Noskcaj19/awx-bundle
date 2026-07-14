@@ -9,13 +9,36 @@ load_config true
 render_config
 registry_config_file=${REGISTRIES_FILE:-"$ROOT/k3d/generated/registries.yaml"}
 
-if k3d cluster list 2>/dev/null | awk '{print $1}' | grep -qx awx-dev; then
+phase='checking for an existing k3d cluster'
+on_error() {
+  local status=$?
+  printf 'ERROR: %s failed (exit %d)\n' "$phase" "$status" >&2
+  if ! debug_enabled; then
+    echo 'Re-run with DEBUG_LOGGING=true in .env for k3d and Docker diagnostics.' >&2
+  fi
+  exit "$status"
+}
+trap on_error ERR
+
+if debug_enabled; then
+  debug_log "Docker server reachable: $(docker info >/dev/null 2>&1 && echo yes || echo no)"
+  debug_log "k3d client: $(k3d version 2>/dev/null | awk '/k3d version/ {print $3; exit}' || echo unknown)"
+  debug_log "custom k3s node image configured: $([[ -n $K3D_NODE_IMAGE ]] && echo yes || echo no)"
+  debug_log "custom k3d proxy image configured: $([[ -n $K3D_PROXY_IMAGE ]] && echo yes || echo no)"
+  debug_log "private registry configured: $([[ -n $REGISTRY_SERVER ]] && echo yes || echo no)"
+  debug_log "registry authentication configured: $([[ -n $REGISTRY_USERNAME ]] && echo yes || echo no)"
+  debug_log "node HTTP proxy configured: $([[ -n $HTTP_PROXY ]] && echo yes || echo no)"
+  debug_log "node HTTPS proxy configured: $([[ -n $HTTPS_PROXY ]] && echo yes || echo no)"
+fi
+
+if { debug_enabled && k3d cluster list || k3d cluster list 2>/dev/null; } | awk '{print $1}' | grep -qx awx-dev; then
   echo "Cluster 'awx-dev' already exists"
   echo 'Node proxy and registry changes require: make cluster-delete cluster-create'
   exit 0
 fi
 
 mkdir -p data/postgres
+phase='creating the awx-dev k3d cluster'
 args=(cluster create --config k3d/awx-dev.yaml)
 args+=(--volume "$ROOT/data/postgres:/var/lib/rancher/k3s/storage@server:0")
 

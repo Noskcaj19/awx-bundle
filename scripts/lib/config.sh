@@ -11,6 +11,75 @@ die() {
   return 1
 }
 
+debug_enabled() {
+  [[ ${DEBUG_LOGGING:-false} == true ]]
+}
+
+debug_log() {
+  debug_enabled || return 0
+  printf '[debug] %s\n' "$*" >&2
+}
+
+redact_url_userinfo() {
+  sed -E 's#(https?://)[^/@]+@#\1***@#g' <<< "$1"
+}
+
+debug_kube_context() {
+  debug_enabled || return 0
+
+  local context server user client_version
+  context=$(kubectl config current-context 2>/dev/null || true)
+  server=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)
+  server=$(redact_url_userinfo "$server")
+  user=$(kubectl config view --minify -o jsonpath='{.contexts[0].context.user}' 2>/dev/null || true)
+  client_version=$(kubectl version --client=true --output=yaml 2>/dev/null | awk '/gitVersion:/ {print $2; exit}' || true)
+
+  debug_log "kubectl client: ${client_version:-unknown}"
+  debug_log "Kubernetes context: ${context:-none}"
+  debug_log "Kubernetes API server: ${server:-unknown}"
+  debug_log "Kubernetes credential entry: ${user:-none}"
+  if [[ -n ${KUBECONFIG:-} ]]; then
+    debug_log 'KUBECONFIG: explicitly set'
+  else
+    debug_log 'KUBECONFIG: using kubectl default search path'
+  fi
+  debug_log "Checking API authentication with 'kubectl auth whoami'"
+  if ! kubectl --v="$KUBECTL_VERBOSITY" auth whoami >&2; then
+    debug_log "Authentication check failed. Inspect 'kubectl config view --minify' and refresh the selected context credentials."
+  fi
+}
+
+kube() {
+  local description=$1
+  shift
+  debug_log "kubectl phase: $description"
+  if debug_enabled; then
+    kubectl --v="$KUBECTL_VERBOSITY" "$@"
+  else
+    kubectl "$@"
+  fi
+}
+
+kube_apply_stdin() {
+  local description=$1
+  debug_log "kubectl phase: $description (manifest supplied on protected stdin)"
+  if debug_enabled; then
+    kubectl --v="$KUBECTL_VERBOSITY" apply -f -
+  else
+    kubectl apply -f -
+  fi
+}
+
+debug_helm_context() {
+  debug_enabled || return 0
+  local version
+  version=$(helm version --short 2>/dev/null || true)
+  debug_log "Helm client: ${version:-unknown}"
+  debug_log "Helm Kubernetes context: $(kubectl config current-context 2>/dev/null || echo none)"
+  debug_log "HTTP proxy configured: $([[ -n ${HTTP_PROXY:-} ]] && echo yes || echo no)"
+  debug_log "HTTPS proxy configured: $([[ -n ${HTTPS_PROXY:-} ]] && echo yes || echo no)"
+}
+
 yaml_quote() {
   local escaped=${1//\'/\'\'}
   printf "'%s'" "$escaped"
@@ -92,6 +161,8 @@ load_config() {
   : "${HTTP_PROXY:=}"
   : "${HTTPS_PROXY:=}"
   : "${NO_PROXY:=}"
+  : "${DEBUG_LOGGING:=false}"
+  : "${KUBECTL_VERBOSITY:=6}"
 
   if [[ $require_awx_secrets == true ]]; then
     [[ -n $AWX_ADMIN_PASSWORD ]] || die "AWX_ADMIN_PASSWORD is required"
@@ -102,6 +173,12 @@ load_config() {
   for name in HTTP_PROXY HTTPS_PROXY NO_PROXY REGISTRY_USERNAME REGISTRY_PASSWORD; do
     require_single_line "$name" "${!name}"
   done
+
+  case ${DEBUG_LOGGING,,} in
+    true|false) DEBUG_LOGGING=${DEBUG_LOGGING,,} ;;
+    *) die "DEBUG_LOGGING must be true or false" ;;
+  esac
+  [[ $KUBECTL_VERBOSITY =~ ^[0-6]$ ]] || die "KUBECTL_VERBOSITY must be an integer from 0 through 6"
 
   validate_repository_tag_pair AWX_IMAGE_REPOSITORY AWX_IMAGE_TAG "$AWX_IMAGE_REPOSITORY" "$AWX_IMAGE_TAG"
   validate_repository_tag_pair AWX_REDIS_IMAGE_REPOSITORY AWX_REDIS_IMAGE_TAG "$AWX_REDIS_IMAGE_REPOSITORY" "$AWX_REDIS_IMAGE_TAG"
@@ -171,6 +248,7 @@ load_config() {
   export AWX_POSTGRES_IMAGE_REPOSITORY AWX_POSTGRES_IMAGE_TAG AWX_PROJECTS_INIT_IMAGE
   export K3S_SYSTEM_DEFAULT_REGISTRY REGISTRY_SERVER REGISTRY_USERNAME REGISTRY_PASSWORD
   export REGISTRY_CA_FILE REGISTRY_PULL_SECRET_NAME REGISTRY_TLS_VERIFY AWX_CA_BUNDLE_FILE
+  export DEBUG_LOGGING KUBECTL_VERBOSITY
 }
 
 emit_proxy_env() {

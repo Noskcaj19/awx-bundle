@@ -60,6 +60,31 @@ characters such as `&`, `#`, spaces, or `$`. Run `make config-validate` after
 each change. Empty optional values preserve the public-image, no-proxy
 behavior.
 
+### Debugging Kubernetes authentication
+
+Set `DEBUG_LOGGING=true` in `.env` to add credential-safe phase logging to
+k3d, Helm, and kubectl operations. Kubernetes logs include the selected
+context, API server, named credential entry, client version, an `auth whoami`
+probe, and kubectl request diagnostics. `KUBECTL_VERBOSITY` accepts `0`–`6`;
+values above 6 are rejected because request bodies can contain secrets.
+
+Shell tracing and Helm's raw `--debug` rendering are deliberately not enabled,
+so registry passwords, AWX secrets, proxy URLs, and rendered Secret manifests
+are not printed. A standalone read-only report is available with:
+
+```bash
+make diagnose
+```
+
+An error such as `the server has asked for the client to provide credentials`
+means kubectl reached the configured API server but the selected kubeconfig
+credential was not accepted. Confirm the context shown by `make diagnose`. For
+the local cluster, refresh and select it with:
+
+```bash
+k3d kubeconfig merge awx-dev --kubeconfig-switch-context
+```
+
 ### Image overrides
 
 Every image directly selected by this project can be routed independently.
@@ -167,6 +192,7 @@ take a backup before relying on it across image or version changes.
 ```text
 make help                    Show all targets
 make check                   Verify local prerequisites
+make diagnose                Print credential-safe deployment diagnostics
 make config-validate         Validate .env without cluster changes
 make config-generate         Render protected deployment configuration
 make test                    Run offline shell, Helm, and Kustomize tests

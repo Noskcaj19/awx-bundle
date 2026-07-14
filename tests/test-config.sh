@@ -157,6 +157,55 @@ for pattern in \
 done
 assert_contains "$TMP/k3d-lb" 'registry.example.test/platform/k3d-proxy:5.8.3'
 
+# Debug logging must identify context/authentication and apply phases without
+# echoing registry passwords or credential-bearing proxy URLs.
+cp "$TMP/full.env" "$TMP/debug.env"
+cat >> "$TMP/debug.env" <<'EOF'
+DEBUG_LOGGING=true
+KUBECTL_VERBOSITY=6
+EOF
+cat > "$TMP/fakebin/kubectl" <<'EOF'
+#!/usr/bin/env bash
+if [[ ${1:-} == --v=* ]]; then
+  shift
+fi
+if [[ ${1:-} == -n ]]; then
+  shift 2
+fi
+case "${1:-} ${2:-}" in
+  'config current-context') echo 'k3d-awx-dev' ;;
+  'config view')
+    if [[ $* == *'.clusters[0].cluster.server'* ]]; then
+      printf 'https://127.0.0.1:6550'
+    else
+      printf 'k3d-awx-dev'
+    fi
+    ;;
+  'version --client=true') echo '  gitVersion: v1.35.0' ;;
+  'auth whoami') echo 'Username: debug-user' ;;
+  'create namespace'|'create secret')
+    printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: awx\n'
+    ;;
+  'apply -f')
+    cat >/dev/null
+    echo 'applied'
+    ;;
+  *) echo "unexpected fake kubectl invocation" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$TMP/fakebin/kubectl"
+debug_output=$(PATH="$TMP/fakebin:$PATH" ENV_FILE="$TMP/debug.env" ./scripts/registry-secrets.sh 2>&1)
+for pattern in \
+  '[debug] Kubernetes context: k3d-awx-dev' \
+  '[debug] Kubernetes API server: https://127.0.0.1:6550' \
+  "[debug] Checking API authentication with 'kubectl auth whoami'" \
+  '[debug] kubectl phase: applying namespace awx' \
+  '[debug] kubectl phase: applying registry pull secret corporate-registry-pull'; do
+  [[ $debug_output == *"$pattern"* ]] || fail "debug output does not contain: $pattern"
+done
+[[ $debug_output != *'r3g:p@ss'* ]] || fail 'debug output leaked the registry password'
+[[ $debug_output != *'proxy-user'* ]] || fail 'debug output leaked proxy credentials'
+
 # Focused failure cases.
 cp "$TMP/default.env" "$TMP/partial-credentials.env"
 cat >> "$TMP/partial-credentials.env" <<'EOF'
@@ -197,5 +246,12 @@ HTTPS_PROXY=http://proxy.example.test:8080
 NO_PROXY=
 EOF
 expect_invalid "$TMP/missing-no-proxy.env" 'NO_PROXY is required'
+
+cp "$TMP/default.env" "$TMP/unsafe-debug.env"
+cat >> "$TMP/unsafe-debug.env" <<'EOF'
+DEBUG_LOGGING=true
+KUBECTL_VERBOSITY=8
+EOF
+expect_invalid "$TMP/unsafe-debug.env" 'KUBECTL_VERBOSITY must be an integer from 0 through 6'
 
 echo '✓ Configuration, Helm, and Kustomize tests passed'
