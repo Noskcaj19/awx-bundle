@@ -11,17 +11,19 @@ HELM_RELEASE     := awx-operator
 HELM_CHART       := awx-operator/awx-operator
 HELM_CHART_VER   := 3.2.1
 HELM_VALUES      := helm/awx-operator-values.yaml
+HELM_OVERRIDES   := helm/generated/awx-operator-overrides.yaml
 
 K8S_DIR          := k8s/awx
 OVERLAY_FILE     := k8s/awx/generated/overlay-patch.yaml
 CA_SECRET        := awx-custom-certs
 ENV_FILE         := .env
+CONFIG_RUN       := ENV_FILE=$(ENV_FILE) ./scripts/run-with-config.sh
 
 # ── Targets ──────────────────────────────────────────────────────
-.PHONY: help up down check \
+.PHONY: help up down check config-validate config-generate test \
         cluster-create cluster-delete \
         repo-add operator-install operator-uninstall \
-        secrets-apply ca-apply overlay-generate awx-apply awx-delete \
+        registry-secrets-apply secrets-apply ca-apply overlay-generate awx-apply awx-delete \
         wait status password url \
         logs-operator logs-awx
 
@@ -43,46 +45,42 @@ check: ## Verify required tools are installed
 	@docker info >/dev/null 2>&1   || { echo "docker not running"; exit 1; }
 	@echo "✓ All prerequisites met"
 
+config-validate: ## Validate .env without changing the cluster
+	@ENV_FILE=$(ENV_FILE) ./scripts/configure.sh validate
+
+config-generate: ## Generate protected k3s, Helm, and AWX configuration
+	@ENV_FILE=$(ENV_FILE) ./scripts/configure.sh render
+
+test: ## Run offline configuration and manifest tests
+	@./tests/test-config.sh
+
 cluster-create: ## Create the k3d cluster
-	@mkdir -p data/postgres
-	@if ! k3d cluster list 2>/dev/null | awk '{print $$1}' | grep -qx "$(CLUSTER_NAME)"; then \
-		[ -f $(ENV_FILE) ] && { set -a && . ./$(ENV_FILE) && set +a; }; \
-		if [ -n "$${K3D_PROXY_IMAGE:-}" ]; then \
-			echo "Using custom k3d proxy image: $$K3D_PROXY_IMAGE"; \
-			export K3D_IMAGE_LOADBALANCER="$$K3D_PROXY_IMAGE"; \
-		fi; \
-		if [ -n "$${K3D_NODE_IMAGE:-}" ]; then \
-			echo "Using custom k3s node image: $$K3D_NODE_IMAGE"; \
-		fi; \
-		k3d cluster create --config $(K3D_CONFIG) \
-			$${K3D_NODE_IMAGE:+--image "$$K3D_NODE_IMAGE"} \
-			--volume "$$(pwd)/data/postgres:/var/lib/rancher/k3s/storage@server:0"; \
-	else \
-		echo "Cluster '$(CLUSTER_NAME)' already exists"; \
-	fi
+	@ENV_FILE=$(ENV_FILE) ./scripts/cluster-create.sh
 
 cluster-delete: ## Delete the k3d cluster
 	@k3d cluster delete $(CLUSTER_NAME) 2>/dev/null || true
 
 repo-add:
-	@helm repo add $(HELM_REPO_NAME) $(HELM_REPO_URL) >/dev/null 2>&1 || true
-	@helm repo update >/dev/null
+	@$(CONFIG_RUN) helm repo add $(HELM_REPO_NAME) $(HELM_REPO_URL) >/dev/null 2>&1 || true
+	@$(CONFIG_RUN) helm repo update >/dev/null
 
-operator-install: repo-add ## Install AWX operator via Helm
-	@helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
+operator-install: config-generate registry-secrets-apply repo-add ## Install AWX operator via Helm
+	@$(CONFIG_RUN) helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) \
 		--namespace $(NAMESPACE) \
-		--create-namespace \
 		--version $(HELM_CHART_VER) \
 		-f $(HELM_VALUES) \
+		-f $(HELM_OVERRIDES) \
 		--wait \
 		--timeout 10m
 
 operator-uninstall: ## Uninstall AWX operator
 	@helm uninstall $(HELM_RELEASE) -n $(NAMESPACE) || true
 
-secrets-apply: ## Create K8s secrets from .env
-	@test -f $(ENV_FILE) || { echo "Missing $(ENV_FILE) — copy .env.example to .env and edit it"; exit 1; }
-	@set -a && . ./$(ENV_FILE) && set +a && \
+registry-secrets-apply: ## Create namespace and optional registry pull secrets
+	@ENV_FILE=$(ENV_FILE) ./scripts/registry-secrets.sh
+
+secrets-apply: registry-secrets-apply ## Create K8s secrets from .env
+	@source scripts/lib/config.sh && ENV_FILE=$(ENV_FILE) && load_config true && \
 		kubectl -n $(NAMESPACE) create secret generic awx-admin-password \
 			--from-literal=password="$$AWX_ADMIN_PASSWORD" \
 			--dry-run=client -o yaml | kubectl apply -f - && \
@@ -91,9 +89,8 @@ secrets-apply: ## Create K8s secrets from .env
 			--dry-run=client -o yaml | kubectl apply -f -
 
 ca-apply: ## Create/refresh corporate CA bundle secret if AWX_CA_BUNDLE_FILE is set
-	@test -f $(ENV_FILE) || { echo "Missing $(ENV_FILE) — copy .env.example to .env and edit it"; exit 1; }
-	@set -a && . ./$(ENV_FILE) && set +a && \
-		if [ -n "$${AWX_CA_BUNDLE_FILE:-}" ] && [ -s "$$AWX_CA_BUNDLE_FILE" ]; then \
+	@source scripts/lib/config.sh && ENV_FILE=$(ENV_FILE) && load_config true && \
+		if [ -n "$${AWX_CA_BUNDLE_FILE:-}" ]; then \
 			echo "Loading corporate CA bundle from $$AWX_CA_BUNDLE_FILE"; \
 			kubectl -n $(NAMESPACE) create secret generic $(CA_SECRET) \
 				--from-file=bundle-ca.crt="$$AWX_CA_BUNDLE_FILE" \
@@ -103,40 +100,7 @@ ca-apply: ## Create/refresh corporate CA bundle secret if AWX_CA_BUNDLE_FILE is 
 			kubectl -n $(NAMESPACE) delete secret $(CA_SECRET) --ignore-not-found=true >/dev/null; \
 		fi
 
-overlay-generate: ## Render generated kustomize patch from .env (proxy + CA)
-	@test -f $(ENV_FILE) || { echo "Missing $(ENV_FILE) — copy .env.example to .env and edit it"; exit 1; }
-	@mkdir -p $(dir $(OVERLAY_FILE))
-	@set -a && . ./$(ENV_FILE) && set +a && \
-		BODY=$$(mktemp) && \
-		if [ -n "$${AWX_CA_BUNDLE_FILE:-}" ] && [ -s "$${AWX_CA_BUNDLE_FILE:-}" ]; then \
-			echo "  bundle_cacert_secret: $(CA_SECRET)" >> $$BODY; \
-		fi; \
-		if [ -n "$${HTTP_PROXY:-}$${HTTPS_PROXY:-}" ]; then \
-			for key in ee_extra_env task_extra_env web_extra_env; do \
-				echo "  $$key: |" >> $$BODY; \
-				[ -n "$${HTTP_PROXY:-}"  ] && printf '    - name: HTTP_PROXY\n      value: "%s"\n'  "$$HTTP_PROXY"  >> $$BODY; \
-				[ -n "$${HTTPS_PROXY:-}" ] && printf '    - name: HTTPS_PROXY\n      value: "%s"\n' "$$HTTPS_PROXY" >> $$BODY; \
-				[ -n "$${NO_PROXY:-}"    ] && printf '    - name: NO_PROXY\n      value: "%s"\n'    "$$NO_PROXY"    >> $$BODY; \
-				[ -n "$${HTTP_PROXY:-}"  ] && printf '    - name: http_proxy\n      value: "%s"\n'  "$$HTTP_PROXY"  >> $$BODY; \
-				[ -n "$${HTTPS_PROXY:-}" ] && printf '    - name: https_proxy\n      value: "%s"\n' "$$HTTPS_PROXY" >> $$BODY; \
-				[ -n "$${NO_PROXY:-}"    ] && printf '    - name: no_proxy\n      value: "%s"\n'    "$$NO_PROXY"    >> $$BODY; \
-			done; \
-		fi; \
-		{ \
-			echo "# Auto-generated by 'make overlay-generate' — do not edit by hand."; \
-			echo "apiVersion: awx.ansible.com/v1beta1"; \
-			echo "kind: AWX"; \
-			echo "metadata:"; \
-			echo "  name: awx"; \
-			if [ -s $$BODY ]; then \
-				echo "spec:"; \
-				cat $$BODY; \
-			else \
-				echo "spec: {}"; \
-			fi; \
-		} > $(OVERLAY_FILE); \
-		rm -f $$BODY
-	@echo "✓ Wrote $(OVERLAY_FILE)"
+overlay-generate: config-generate ## Backward-compatible alias for config-generate
 
 awx-apply: ## Apply AWX custom resource
 	@echo "Waiting for AWX CRD to be established..."
@@ -147,12 +111,12 @@ awx-apply: ## Apply AWX custom resource
 	@$(MAKE) secrets-apply
 	@echo "Loading corporate CA (if configured)..."
 	@$(MAKE) ca-apply
-	@echo "Generating proxy/CA overlay patch..."
-	@$(MAKE) overlay-generate
+	@echo "Generating deployment configuration..."
+	@$(MAKE) config-generate
 	@echo "Applying AWX manifests..."
 	@kubectl apply -k $(K8S_DIR)
 
-awx-delete: ## Delete AWX instance (keeps operator)
+awx-delete: config-generate ## Delete AWX instance (keeps operator)
 	@kubectl delete -k $(K8S_DIR) --ignore-not-found=true
 
 wait: ## Wait for AWX pods to become ready
